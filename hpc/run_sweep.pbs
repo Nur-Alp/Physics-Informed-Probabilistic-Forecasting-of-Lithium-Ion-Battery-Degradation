@@ -1,0 +1,20 @@
+#!/bin/bash
+# Array job: one sub-job per simulated degradation curve.
+# Submit with: qsub run_sweep.pbs
+# Monitor with: qstat -u $USER
+#
+# Per-sub-job walltime is sized from a local timing check (0.092 s/cycle
+# for this exact config, measured 16 Nov 2026) scaled to the 20000-cycle
+# cap, plus a safety margin for a slower/shared HPC core. Re-check this
+# once the first few sub-jobs finish, qstat/qacct report actual usage.
+#PBS -l select=1:ncpus=1:mem=4gb
+#PBS -l walltime=03:00:00
+#PBS -J 1-200%50
+#PBS -N pybamm_sweep
+
+cd $PBS_O_WORKDIR
+
+eval "$(~/miniforge3/bin/conda shell.bash hook)"
+conda activate fyp
+
+python run_one_curve.py $PBS_ARRAY_INDEX
