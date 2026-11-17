@@ -1,0 +1,21 @@
+#!/bin/bash
+# Array job: one sub-job per simulated degradation curve.
+# Each sub-job loops, calling run_one_curve.py repeatedly: that script
+# does ONE CHUNK (CHUNK_CYCLES, see run_one_curve.py) per invocation
+# then exits, so the OS reclaims its memory before the next chunk
+# starts. This replaced a single long-running solve per curve, which
+# OOM-killed at ~16.7GB after 37-51 min on CX3 (16 Nov 2026) because
+# PyBaMM accumulates solver state for the whole run in one process.
+#PBS -l select=1:ncpus=1:mem=4gb
+#PBS -l walltime=02:00:00
+#PBS -J 1-2
+#PBS -N pybamm_test
+
+cd $PBS_O_WORKDIR
+eval "$(~/miniforge3/bin/conda shell.bash hook)"
+conda activate fyp
+
+RESULT_FILE=$(printf "results/curve_%05d.json" $PBS_ARRAY_INDEX)
+while [ ! -f "$RESULT_FILE" ]; do
+    python run_one_curve.py $PBS_ARRAY_INDEX
+done

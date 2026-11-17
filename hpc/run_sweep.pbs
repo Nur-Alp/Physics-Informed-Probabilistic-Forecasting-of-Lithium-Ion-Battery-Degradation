@@ -3,12 +3,19 @@
 # Submit with: qsub run_sweep.pbs
 # Monitor with: qstat -u $USER
 #
-# Per-sub-job walltime is sized from a local timing check (0.092 s/cycle
-# for this exact config, measured 16 Nov 2026) scaled to the 20000-cycle
-# cap, plus a safety margin for a slower/shared HPC core. Re-check this
-# once the first few sub-jobs finish, qstat/qacct report actual usage.
+# Each sub-job loops, calling run_one_curve.py repeatedly: that script
+# does ONE CHUNK (CHUNK_CYCLES cycles, see run_one_curve.py) per
+# invocation then exits, so the OS reclaims its memory before the next
+# chunk starts. This replaced a single long-running solve per curve,
+# which OOM-killed at ~16.7GB after 37-51 min on CX3 (16 Nov 2026),
+# because PyBaMM accumulates solver state for the whole run in one
+# process; chunking bounds memory to one chunk regardless of how many
+# total cycles a curve needs. Not yet verified at full (200-curve)
+# scale, only on a small test, re-check actual mem/walltime usage
+# before trusting these at scale, since Monte Carlo parameter draws
+# vary how many cycles each curve needs to reach 80% capacity.
 #PBS -l select=1:ncpus=1:mem=4gb
-#PBS -l walltime=03:00:00
+#PBS -l walltime=02:00:00
 #PBS -J 1-200%50
 #PBS -N pybamm_sweep
 
@@ -17,4 +24,7 @@ cd $PBS_O_WORKDIR
 eval "$(~/miniforge3/bin/conda shell.bash hook)"
 conda activate fyp
 
-python run_one_curve.py $PBS_ARRAY_INDEX
+RESULT_FILE=$(printf "results/curve_%05d.json" $PBS_ARRAY_INDEX)
+while [ ! -f "$RESULT_FILE" ]; do
+    python run_one_curve.py $PBS_ARRAY_INDEX
+done

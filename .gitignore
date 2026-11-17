@@ -1,3 +1,6 @@
+# Raw experimental datasets (Severson/Kirkaldy, tens of GB, never commit)
+data/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
