@@ -1,0 +1,57 @@
+{
+ "dataset": "kirkaldy",
+ "created": "2026-11-17",
+ "locked": true,
+ "test_sha256": "126137eedf3121e3e805f752bd62a0e8a664869f744a08a8e7ff2c580c1a93ba",
+ "counts": {
+  "train": 14,
+  "val": 13,
+  "test": 13
+ },
+ "train": [
+  "E1_K",
+  "E1_L",
+  "E1_M",
+  "E2.2_A",
+  "E2.2_B",
+  "E3_D",
+  "E3_E",
+  "E3_F",
+  "E4_F",
+  "E4_G",
+  "E4_H",
+  "E5_A",
+  "E5_B",
+  "E5_C"
+ ],
+ "val": [
+  "E1_D",
+  "E1_E",
+  "E1_F",
+  "E2.2_E",
+  "E2.2_F",
+  "E3_A",
+  "E3_B",
+  "E3_C",
+  "E4_D",
+  "E4_E",
+  "E5_F",
+  "E5_G",
+  "E5_H"
+ ],
+ "test": [
+  "E1_A",
+  "E1_B",
+  "E1_J",
+  "E2.2_C",
+  "E2.2_D",
+  "E3_G",
+  "E3_H",
+  "E3_I",
+  "E4_A",
+  "E4_B",
+  "E4_C",
+  "E5_D",
+  "E5_E"
+ ]
+}
