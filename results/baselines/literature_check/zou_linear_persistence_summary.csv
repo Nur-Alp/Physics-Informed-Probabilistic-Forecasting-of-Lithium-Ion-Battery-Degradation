@@ -1,0 +1,5 @@
+window,N,n_cells,mae_capped,median_ae_uncapped,frac_beyond_cap,published_mae
+all_N,50,83,1044.39,inf,0.96,1636.56
+all_N,100,83,1009.27,inf,0.92,1562.07
+last_10,50,83,995.79,9247.59,0.89,1636.56
+last_10,100,83,960.25,4370.07,0.86,1562.07

@@ -33,7 +33,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from baselines.models import FadeFit, NaiveSlope, PlainGP, Wiener
+from baselines.models import (CrossCellCapacity, FadeFit, FadeFitPrior, NaiveSlope,
+                             NaiveSlopeNonIncreasing, PlainGP, Wiener, WienerPower)
 from data_pipeline import kirkaldy, metrics as M, severson, splits
 
 REPO = Path(__file__).resolve().parents[1]
@@ -72,6 +73,10 @@ def evaluate_cell(model, x, q, eol_true, origin, cfg, ds, rng):
     model.fit(xh, qh)
     S = model.sample(x_all, N_SAMPLES, rng)
     secs = time.perf_counter() - t0
+    try:  # noise-free trajectories for the example plots only
+        S_plot = model.sample(x_all, N_SAMPLES, rng, latent=True)
+    except TypeError:
+        S_plot = S
     # Same physical bound for every model: capacity in [0, 1.1 x max seen].
     S = np.clip(S, 0.0, 1.1 * qh.max())
     idx = np.searchsorted(x_all, xf)
@@ -84,7 +89,8 @@ def evaluate_cell(model, x, q, eol_true, origin, cfg, ds, rng):
         g = x_all >= xh[-1]
         eols = M.eol_samples(x_all[g], S[:, g], ds.eol_capacity_ah)
         row.update(M.eol_metrics(eol_true, eols, cfg["horizon"]))
-    return row, (xh, qh, xf, qf, x_all, S)
+    S_plot = np.clip(S_plot, 0.0, 1.1 * qh.max())
+    return row, (xh, qh, xf, qf, x_all, S_plot)
 
 
 def run_part(models, ds, cfg, cell_ids, part, seed=0, keep_examples=()):
@@ -176,12 +182,105 @@ def plot_examples(examples, ds, cfg, path):
     plt.close(fig)
 
 
+def build_models(set_name, ds, cfg, fit_ids, quiet=True):
+    """The frozen model set ("original" or "v2"), with every population
+    quantity (naive window, Wiener prior and exponent, fade-fit prior,
+    cross-cell regression) fitted on ``fit_ids`` only."""
+    w, _ = tune_naive_window(ds, cfg, fit_ids)
+    curves = [ds.curve(c) for c in fit_ids]
+    if set_name == "frozen":
+        # Frozen 18 Nov 2026 (baselines/FROZEN.md): per baseline, the
+        # version with the lower grouped-5-fold-CV capacity CRPS.
+        if ds.name == "severson":
+            models = [NaiveSlopeNonIncreasing(w), FadeFitPrior(), Wiener(block=cfg["wiener_block"]),
+                      PlainGP(), CrossCellCapacity(ds.eol_capacity_ah)]
+        else:
+            models = [NaiveSlopeNonIncreasing(w), FadeFit(),
+                      WienerPower(block=cfg["wiener_block"]), PlainGP()]
+        for m in models:
+            m.fit_population(curves)
+        return models
+    if set_name == "original":
+        wiener = Wiener(block=cfg["wiener_block"])
+        wiener.fit_population(curves)
+        return [NaiveSlope(w), FadeFit(), wiener, PlainGP()]
+    models = [NaiveSlopeNonIncreasing(w), FadeFitPrior(),
+              WienerPower(block=cfg["wiener_block"]), PlainGP()]
+    if ds.name == "severson":  # Kirkaldy lives are mostly censored
+        models.append(CrossCellCapacity(ds.eol_capacity_ah))
+    for m in models:
+        m.fit_population(curves)
+    return models
+
+
+def _cv_fold(args):
+    import os
+    for v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+        os.environ.setdefault(v, "1")
+    dataset, set_name, k, fit_ids, held_ids = args
+    cfg = CONFIG[dataset]
+    ds = cfg["loader"]()
+    models = build_models(set_name, ds, cfg, fit_ids)
+    df, _ = run_part(models, ds, cfg, held_ids, f"fold{k}", seed=k)
+    return df
+
+
+def run_cv(dataset, set_name, k=5, n_boot=2000, seed=0):
+    """Grouped k-fold cross-validation over ALL development cells
+    (train + val; the locked test set is never loaded). Folds are grouped
+    by charging protocol (Severson) or experiment x temperature
+    (Kirkaldy), so no group is in both the fitting and held-out cells.
+    Every cell is scored exactly once, out of fold. Medians get 95%
+    bootstrap intervals over cells."""
+    from concurrent.futures import ProcessPoolExecutor
+    from sklearn.model_selection import GroupKFold
+    cfg = CONFIG[dataset]
+    ds = cfg["loader"]()
+    sp = splits.get(dataset)
+    dev = np.array(sp["train"] + sp["val"])
+    groups = ds.cells.set_index("cell_id").loc[dev, "group"].to_numpy()
+    jobs = [(dataset, set_name, i, list(dev[tr]), list(dev[te]))
+            for i, (tr, te) in enumerate(GroupKFold(k).split(dev, groups=groups))]
+    with ProcessPoolExecutor(min(k, 5)) as ex:
+        per_cell = pd.concat(list(ex.map(_cv_fold, jobs)), ignore_index=True)
+    tag = f"{dataset}_{set_name}_cv{k}"
+    per_cell.to_csv(OUT / f"{tag}_per_cell.csv", index=False)
+    rng = np.random.default_rng(seed)
+    rows = []
+    d = per_cell[~per_cell.skipped]
+    for (model, origin), g in d.groupby(["model", "origin"]):
+        ape = g["eol_abs_pct_error"].dropna().to_numpy()
+        cov = g["eol_covered"].dropna().to_numpy().astype(float)
+        boot = [np.median(rng.choice(ape, len(ape))) for _ in range(n_boot)] if len(ape) else [np.nan]
+        rows.append(dict(model=model, origin=origin, n_cells=g.cell_id.nunique(),
+                         eol_n=len(ape),
+                         eol_ape_median=float(np.median(ape)) if len(ape) else np.nan,
+                         eol_ape_median_lo=float(np.quantile(boot, 0.025)),
+                         eol_ape_median_hi=float(np.quantile(boot, 0.975)),
+                         eol_cov95=float(cov.mean()) if len(cov) else np.nan,
+                         rmse_mah_median=1000 * float(g["rmse"].median()),
+                         crps_mah=1000 * float(g["crps"].mean()),
+                         coverage95=float(g["coverage95"].mean())))
+    summ = pd.DataFrame(rows).round(3)
+    summ.to_csv(OUT / f"{tag}_summary.csv", index=False)
+    return summ
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("dataset", choices=list(CONFIG))
+    ap.add_argument("--set", default="original", choices=["original", "v2", "frozen"],
+                    help="v2 = the fixed baselines added 18 Nov 2026 (results get a _v2 suffix)")
+    ap.add_argument("--cv", type=int, default=0,
+                    help="grouped k-fold CV over train+val instead of the single split")
     ap.add_argument("--final", action="store_true",
                     help="ALSO score the locked test set. Final evaluation only.")
     a = ap.parse_args()
+    if a.cv:
+        summ = run_cv(a.dataset, a.set, a.cv)
+        with pd.option_context("display.width", 250, "display.max_columns", 30):
+            print(summ.to_string(index=False))
+        return
     cfg = CONFIG[a.dataset]
     ds = cfg["loader"]()
     sp = splits.get(a.dataset, final_evaluation=a.final)
@@ -196,6 +295,22 @@ def main():
           f"sigma_lambda={np.sqrt(wiener.s_l2):.3e}, sigma_B={np.sqrt(wiener.sB2):.3e} (Ah / sqrt({ds.x_name}))")
 
     models = [NaiveSlope(w), FadeFit(), wiener, PlainGP()]
+    tag = a.dataset
+    if a.set == "frozen":
+        models = build_models("frozen", ds, cfg, sp["train"])
+        tag = f"{a.dataset}_frozen"
+    elif a.set == "v2":
+        train_curves = [ds.curve(c) for c in sp["train"]]
+        models = [NaiveSlopeNonIncreasing(w), FadeFitPrior(),
+                  WienerPower(block=cfg["wiener_block"]), PlainGP()]
+        if a.dataset == "severson":  # Kirkaldy lives are mostly censored
+            models.append(CrossCellCapacity(ds.eol_capacity_ah))
+        for m in models:
+            m.fit_population(train_curves)
+        wp = models[2]
+        print(f"v2: fade-fit prior from {models[1].n_pop} train cells, misfit sigma "
+              f"{models[1].sigma*1000:.1f} mAh; Wiener power-law b = {wp.b:.1f}")
+        tag = f"{a.dataset}_v2"
     parts = ["train", "val"] + (["test"] if a.final else [])
     eol = ds.cells.set_index("cell_id")["eol_x"]
     val_ex = [c for c in sp["val"] if not np.isnan(eol[c])]
@@ -211,15 +326,15 @@ def main():
         examples.update(exm)
         print(f"{part}: {len(sp[part])} cells, {time.time()-t0:.0f}s")
     per_cell = pd.concat(frames, ignore_index=True)
-    per_cell.to_csv(OUT / f"{a.dataset}_per_cell.csv", index=False)
+    per_cell.to_csv(OUT / f"{tag}_per_cell.csv", index=False)
     summ = summarise(per_cell)
-    summ.to_csv(OUT / f"{a.dataset}_summary.csv")
+    summ.to_csv(OUT / f"{tag}_summary.csv")
     with pd.option_context("display.width", 250, "display.max_columns", 30):
         print(summ)
     # examples at the middle origin
     mid = cfg["origins"][1]
     plot_examples({k: v for k, v in examples.items() if k[2] == mid}, ds, cfg,
-                  OUT / f"{a.dataset}_val_examples_origin{mid}.png")
+                  OUT / f"{tag}_val_examples_origin{mid}.png")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,4 @@
+part,n_cells,n_predictions,rmse_cellavg,rmse_cellmedian,rmse_pooled,rmse_pooled_no_merged,alpha_acc_pct,calib_err_cellavg,calib_err_pooled,coverage95,n_never_crossing
+train,42,1974,64.971,43.112,144.196,73.633,22.275,0.232,0.219,0.816,0
+val,41,2359,114.575,63.215,445.508,96.197,18.45,0.233,0.242,0.778,42
+train+val,83,4333,89.474,45.923,341.668,85.545,20.385,0.233,0.231,0.795,42
